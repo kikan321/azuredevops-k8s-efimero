@@ -1,0 +1,271 @@
+# ============================================================
+# Azure DevOps CI Pipeline - Kubernetes Validation
+#
+# Purpose:
+# This pipeline validates Kubernetes manifests using:
+# - Static analysis (kube-linter)
+# - Ephemeral Kubernetes cluster (KinD)
+# - Runtime validation (rollout + availability checks)
+# - Full observability with step-level logging
+# - Failure artifacts for debugging and auditability
+# ============================================================
+
+trigger:
+  branches:
+    include:
+      - main
+
+  # Run pipeline only when Kubernetes manifests change
+  paths:
+    include:
+      - k8s-manifests/deployment.yaml
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+jobs:
+- job: KubernetesValidation
+  displayName: 'Kubernetes CI Validation Pipeline'
+
+  steps:
+
+  # ==========================================================
+  # STEP 0 - Checkout source code
+  #
+  # Explicitly clones the repository into the CI agent.
+  # Ensures reproducibility and avoids implicit behavior.
+  # ==========================================================
+  - checkout: self
+    displayName: 'Checkout repository'
+
+  # ==========================================================
+  # STEP 1 - Install KinD
+  #
+  # KinD creates a local Kubernetes cluster inside Docker
+  # for ephemeral and isolated testing.
+  # ==========================================================
+  - script: |
+      set +e
+      TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+
+      echo "Installing KinD..."
+
+      curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64 \
+        > step1_output_${TIMESTAMP}.log 2>&1
+
+      chmod +x ./kind >> step1_output_${TIMESTAMP}.log 2>&1
+      sudo mv ./kind /usr/local/bin/kind >> step1_output_${TIMESTAMP}.log 2>&1
+
+      kind version >> step1_output_${TIMESTAMP}.log 2>&1
+      EXIT_CODE=$?
+
+      if [ $EXIT_CODE -ne 0 ]; then
+        echo "FAIL STEP 1 - KinD installation" > fail_step1_${TIMESTAMP}.log
+        cat step1_output_${TIMESTAMP}.log >> fail_step1_${TIMESTAMP}.log
+        exit 1
+      fi
+
+      set -e
+    displayName: 'Install KinD'
+
+  # ==========================================================
+  # STEP 2 - Install kubectl
+  #
+  # kubectl is required to interact with Kubernetes cluster.
+  # ==========================================================
+  - script: |
+      set +e
+      TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+
+      echo "Installing kubectl..."
+
+      curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+        > step2_output_${TIMESTAMP}.log 2>&1
+
+      chmod +x kubectl >> step2_output_${TIMESTAMP}.log 2>&1
+      sudo mv kubectl /usr/local/bin/ >> step2_output_${TIMESTAMP}.log 2>&1
+
+      kubectl version --client >> step2_output_${TIMESTAMP}.log 2>&1
+      EXIT_CODE=$?
+
+      if [ $EXIT_CODE -ne 0 ]; then
+        echo "FAIL STEP 2 - kubectl installation" > fail_step2_${TIMESTAMP}.log
+        cat step2_output_${TIMESTAMP}.log >> fail_step2_${TIMESTAMP}.log
+        exit 1
+      fi
+
+      set -e
+    displayName: 'Install kubectl'
+
+  # ==========================================================
+  # STEP 3 - kube-linter (STATIC ANALYSIS / QUALITY GATE)
+  #
+  # This is a SHIFT-LEFT validation step.
+  # If it fails, pipeline stops immediately.
+  # ==========================================================
+  - script: |
+      set +e
+      TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+
+      echo "Running kube-linter..."
+
+      ./kube-linter lint k8s-manifests/deployment.yaml \
+        > step3_output_${TIMESTAMP}.log 2>&1
+
+      EXIT_CODE=$?
+
+      if [ $EXIT_CODE -ne 0 ]; then
+        echo "FAIL STEP 3 - kube-linter validation" > fail_step3_${TIMESTAMP}.log
+        cat step3_output_${TIMESTAMP}.log >> fail_step3_${TIMESTAMP}.log
+        exit 1
+      fi
+
+      set -e
+    displayName: 'Run kube-linter'
+
+  # ==========================================================
+  # STEP 4 - Create KinD cluster
+  # ==========================================================
+  - script: |
+      set +e
+      TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+
+      echo "Creating KinD cluster..."
+
+      kind create cluster --name cluster-cv \
+        > step4_output_${TIMESTAMP}.log 2>&1
+
+      EXIT_CODE=$?
+
+      if [ $EXIT_CODE -ne 0 ]; then
+        echo "FAIL STEP 4 - cluster creation" > fail_step4_${TIMESTAMP}.log
+        cat step4_output_${TIMESTAMP}.log >> fail_step4_${TIMESTAMP}.log
+        exit 1
+      fi
+
+      set -e
+    displayName: 'Create KinD Cluster'
+
+  # ==========================================================
+  # STEP 5 - Verify cluster health
+  # ==========================================================
+  - script: |
+      set +e
+      TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+
+      kubectl cluster-info --context kind-cluster-cv \
+        > step5_output_${TIMESTAMP}.log 2>&1
+
+      kubectl get nodes >> step5_output_${TIMESTAMP}.log 2>&1
+
+      EXIT_CODE=$?
+
+      if [ $EXIT_CODE -ne 0 ]; then
+        echo "FAIL STEP 5 - cluster health" > fail_step5_${TIMESTAMP}.log
+        cat step5_output_${TIMESTAMP}.log >> fail_step5_${TIMESTAMP}.log
+        exit 1
+      fi
+
+      set -e
+    displayName: 'Verify Cluster Health'
+
+  # ==========================================================
+  # STEP 6 - Deploy application
+  # ==========================================================
+  - script: |
+      set +e
+      TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+
+      kubectl apply -f k8s-manifests/deployment.yaml \
+        > step6_output_${TIMESTAMP}.log 2>&1
+
+      EXIT_CODE=$?
+
+      if [ $EXIT_CODE -ne 0 ]; then
+        echo "FAIL STEP 6 - deploy" > fail_step6_${TIMESTAMP}.log
+        cat step6_output_${TIMESTAMP}.log >> fail_step6_${TIMESTAMP}.log
+        exit 1
+      fi
+
+      set -e
+    displayName: 'Deploy Application'
+
+  # ==========================================================
+  # STEP 7 - Rollout validation
+  # ==========================================================
+  - script: |
+      set +e
+      TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+
+      kubectl rollout status deployment/mi-app-prueba --timeout=120s \
+        > step7_output_${TIMESTAMP}.log 2>&1
+
+      EXIT_CODE=$?
+
+      if [ $EXIT_CODE -ne 0 ]; then
+        echo "FAIL STEP 7 - rollout" > fail_step7_${TIMESTAMP}.log
+        cat step7_output_${TIMESTAMP}.log >> fail_step7_${TIMESTAMP}.log
+        exit 1
+      fi
+
+      set -e
+    displayName: 'Verify Rollout Status'
+
+  # ==========================================================
+  # STEP 8 - Availability check
+  # ==========================================================
+  - script: |
+      set +e
+      TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+
+      kubectl wait \
+        --for=condition=available deployment/mi-app-prueba \
+        --timeout=120s \
+        > step8_output_${TIMESTAMP}.log 2>&1
+
+      EXIT_CODE=$?
+
+      if [ $EXIT_CODE -ne 0 ]; then
+        echo "FAIL STEP 8 - availability" > fail_step8_${TIMESTAMP}.log
+        cat step8_output_${TIMESTAMP}.log >> fail_step8_${TIMESTAMP}.log
+        exit 1
+      fi
+
+      set -e
+    displayName: 'Verify Deployment Availability'
+
+  # ==========================================================
+  # STEP 9 - Collect cluster state
+  # ==========================================================
+  - script: |
+      TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+
+      {
+        echo "===== DEPLOYMENTS ====="
+        kubectl get deployments
+
+        echo "===== PODS ====="
+        kubectl get pods -o wide
+
+        echo "===== SERVICES ====="
+        kubectl get svc
+
+        echo "===== EVENTS ====="
+        kubectl get events --sort-by=.metadata.creationTimestamp
+      } > cluster_state_${TIMESTAMP}.log
+    displayName: 'Collect Cluster State'
+
+  # ==========================================================
+  # STEP 10 - Publish all artifacts (always executed)
+  #
+  # Includes:
+  # - success logs
+  # - failure logs
+  # - cluster state snapshots
+  # ==========================================================
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Pipeline Artifacts'
+    condition: always()
+    inputs:
+      pathToPublish: .
+      artifactName: k8s-validation-artifacts
