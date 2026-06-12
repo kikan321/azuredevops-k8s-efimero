@@ -72,5 +72,4 @@ The declarative pipeline defined in `azure-pipelines.yml` executes sequentially 
 *   **Step 9: Collect Cluster State:** Gathers configuration outputs (`get deployments`, `get pods -o wide`, `get svc`, and cluster system events) into a consolidated runtime snapshot log.
 *   **Step 10: Publish Pipeline Artifacts:** Uses the native platform tasks to push all telemetry log files into Azure DevOps secure storage. This guarantees full debugging transparency for developers even after the underlying ephemeral runner VM is permanently destroyed.
 
----
-Designed and developed as a portfolio showcase to demonstrate advanced workflow automation, FinOps cost optimization, and rigorous continuous delivery standards.
+
